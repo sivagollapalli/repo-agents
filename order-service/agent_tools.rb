@@ -10,15 +10,12 @@ class ReadCodebase < RubyLLM::Tool
 end
 
 # Tool to ask the orchestrator a question when something is missing.
-# Use this when you encounter a cross-service HTTP call and need to know
-# what the other service would return, or when you need any info that
-# only the orchestrator can provide.
 class AskOrchestrator < RubyLLM::Tool
   description <<~DESC
     Ask the orchestrator agent a question. Use this when:
     - The code makes an HTTP call to another service (e.g. inventory service) and you need to know what it would return for specific params.
     - You need information that is outside your scope (you only know about the order service).
-    - You want the orchestrator to query the other service agent on your behalf.
+    - You need DB state or runtime values that only the user can provide.
     Be specific: include the endpoint, HTTP method, and params the code would send.
   DESC
 

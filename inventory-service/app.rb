@@ -5,6 +5,7 @@ require 'net/http'
 require 'json'
 require 'securerandom'
 require 'ruby_llm'
+require_relative '../shared-memory/session'
 require_relative 'agent_tools'
 
 set :port, 4001
@@ -23,7 +24,7 @@ before do
 end
 
 RubyLLM.configure do |config|
-  config.openai_api_key  = ENV.fetch('OPENAI_API_KEY', nil)
+  config.openai_api_key = ENV.fetch('OPENAI_API_KEY', nil)
 end
 
 INVENTORY_AGENT_SYSTEM_PROMPT = <<~PROMPT
@@ -35,7 +36,7 @@ INVENTORY_AGENT_SYSTEM_PROMPT = <<~PROMPT
   1. THINK: Read the prompt carefully. What endpoint is being debugged? What params were sent? What response was received?
   2. READ: Use ReadCodebase to load the source code and find the relevant endpoint.
   3. TRACE: Walk through the code line by line. For each variable, determine its value given the params.
-     - If a value depends on DB state you don't know, use AskUser to ask.
+     - If a value depends on DB state you don't know, use AskOrchestrator to ask.
      - If the code makes an HTTP call to another service (e.g. order), use AskOrchestrator to ask what that service would return for those specific params. Do NOT guess — wait for the answer.
   4. REASON: Once you have all values, compare the traced execution path with the user-reported response. Identify where they diverge.
   5. RESPOND: Provide your analysis conversationally — explain what you found, what the code does, and where the issue is.
@@ -44,6 +45,7 @@ INVENTORY_AGENT_SYSTEM_PROMPT = <<~PROMPT
   - Always read the code first before reasoning about it.
   - Never guess what another service returns — ask the orchestrator.
   - If you're missing any piece of information, ask for it before continuing.
+  - The shared memory conversation history is provided below. When history exists, the orchestrator is continuing a conversation — resume from there.
 PROMPT
 
 def db
@@ -62,19 +64,16 @@ def db
   end
 end
 
-# List all products
 get '/products' do
   json db.execute('SELECT * FROM products')
 end
 
-# Get a single product
 get '/products/:id' do
   product = db.execute('SELECT * FROM products WHERE id = ?', params[:id]).first
   halt 404, json(error: 'Product not found') unless product
   json product
 end
 
-# Create a product
 post '/products' do
   data = JSON.parse(request.body.read)
   db.execute('INSERT INTO products (name, price, stock) VALUES (?, ?, ?)',
@@ -83,7 +82,6 @@ post '/products' do
   json db.execute('SELECT * FROM products WHERE id = ?', id).first
 end
 
-# Update stock
 patch '/products/:id/stock' do
   data = JSON.parse(request.body.read)
   product = db.execute('SELECT * FROM products WHERE id = ?', params[:id]).first
@@ -96,7 +94,6 @@ patch '/products/:id/stock' do
   json db.execute('SELECT * FROM products WHERE id = ?', params[:id]).first
 end
 
-# Check stock availability
 get '/products/:id/availability' do
   product = db.execute('SELECT * FROM products WHERE id = ?', params[:id]).first
   halt 404, json(error: 'Product not found') unless product
@@ -105,74 +102,29 @@ get '/products/:id/availability' do
   json(available: product['stock'] >= quantity, stock: product['stock'])
 end
 
-# Agent endpoint — accepts a prompt and debugs using LLM + tools
-# Supports multi-turn conversations via session_id (UUID).
-# - No session_id: creates a new session, returns the session_id.
-# - With session_id: loads history from the session markdown file and continues.
-
-SESSIONS_DIR = File.join(__dir__, 'sessions')
-Dir.mkdir(SESSIONS_DIR) unless Dir.exist?(SESSIONS_DIR)
-
-def session_path(session_id)
-  File.join(SESSIONS_DIR, "#{session_id}.md")
-end
-
-def load_session(session_id)
-  path = session_path(session_id)
-  return [] unless File.exist?(path)
-
-  messages = []
-  current_role = nil
-  current_content = []
-
-  File.readlines(path).each do |line|
-    if line.match?(/^## (user|assistant)$/)
-      if current_role
-        messages << { role: current_role, content: current_content.join.strip }
-      end
-      current_role = line.strip.sub('## ', '')
-      current_content = []
-    else
-      current_content << line
-    end
-  end
-
-  if current_role
-    messages << { role: current_role, content: current_content.join.strip }
-  end
-
-  messages
-end
-
-def append_to_session(session_id, role, content)
-  File.open(session_path(session_id), 'a') do |f|
-    f.puts "\n## #{role}\n\n#{content}\n"
-  end
-end
-
 post '/agent' do
   data = JSON.parse(request.body.read)
   prompt = data['prompt']
   halt 400, json(error: 'prompt is required') unless prompt && !prompt.strip.empty?
 
-  session_id = data['session_id'] || SecureRandom.uuid
+  session_id = data['session_id']
+  halt 400, json(error: 'session_id is required') unless session_id
 
-  # Build system prompt with conversation history so the LLM resumes, not restarts
-  history = load_session(session_id)
-  history_context = if history.any?
-    conversation = history.map { |m| "#{m[:role].upcase}: #{m[:content]}" }.join("\n\n")
-    "\n\n<conversation-history>\n#{conversation}\n</conversation-history>\n\nContinue from where you left off. The orchestrator is replying to your last message. Analyze their response and proceed with the next step of your trace."
-  else
-    ""
-  end
+  # Record incoming prompt in shared memory
+  SharedMemory.append(session_id, agent: 'orchestrator', type: 'question', content: "To inventory-service: #{prompt}")
 
-  system_prompt = "#{INVENTORY_AGENT_SYSTEM_PROMPT}#{history_context}"
+  # Build system prompt with shared memory context
+  history = SharedMemory.conversation_context(session_id)
+  history_block = history.empty? ? "" : "\n\n<shared-memory>\n#{history}\n</shared-memory>\n\nResume from where the conversation left off. Analyze the orchestrator's message and proceed."
+
+  system_prompt = "#{INVENTORY_AGENT_SYSTEM_PROMPT}#{history_block}"
 
   chat = RubyLLM.chat(model: 'gpt-4-turbo', provider: :openai)
     .with_instructions(system_prompt)
     .with_tools(ReadCodebase, AskOrchestrator, AskUser)
     .on_tool_call do |tool_call|
         puts "Calling tool: #{tool_call.name}"
+        puts "Arguments: #{tool_call.arguments}"
       end
       .on_tool_result do |result|
         puts "Tool returned: #{result}"
@@ -180,9 +132,8 @@ post '/agent' do
 
   response = chat.ask(prompt)
 
-  # Persist both sides
-  append_to_session(session_id, 'user', prompt)
-  append_to_session(session_id, 'assistant', response.content)
+  # Record response in shared memory
+  SharedMemory.append(session_id, agent: 'inventory-service', type: 'answer', content: response.content)
 
   json({ session_id: session_id, response: response.content })
 rescue => e

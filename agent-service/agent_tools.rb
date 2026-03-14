@@ -1,4 +1,5 @@
 require 'ruby_llm'
+require_relative '../shared-memory/session'
 
 # Tool to ask the order-service agent
 class AskOrderAgent < RubyLLM::Tool
@@ -11,6 +12,9 @@ class AskOrderAgent < RubyLLM::Tool
   end
 
   def execute(prompt:)
+    # Record what we're asking in shared memory
+    SharedMemory.append(@session_id, agent: 'orchestrator', type: 'routing', content: "Asking order-service: #{prompt}")
+
     order_url = ENV.fetch('ORDER_URL', 'http://localhost:4002')
     uri = URI("#{order_url}/agent")
     http = Net::HTTP.new(uri.host, uri.port)
@@ -18,7 +22,12 @@ class AskOrderAgent < RubyLLM::Tool
     req.body = { prompt: prompt, session_id: @session_id }.to_json
 
     response = http.request(req)
-    JSON.parse(response.body)
+    parsed = JSON.parse(response.body)
+
+    # Record the agent's response in shared memory
+    SharedMemory.append(@session_id, agent: 'order-service', type: 'answer', content: parsed['response'] || parsed.to_json)
+
+    parsed
   rescue => e
     { error: "Order agent unavailable: #{e.message}" }
   end
@@ -35,6 +44,9 @@ class AskInventoryAgent < RubyLLM::Tool
   end
 
   def execute(prompt:)
+    # Record what we're asking in shared memory
+    SharedMemory.append(@session_id, agent: 'orchestrator', type: 'routing', content: "Asking inventory-service: #{prompt}")
+
     inventory_url = ENV.fetch('INVENTORY_URL', 'http://localhost:4001')
     uri = URI("#{inventory_url}/agent")
     http = Net::HTTP.new(uri.host, uri.port)
@@ -42,7 +54,12 @@ class AskInventoryAgent < RubyLLM::Tool
     req.body = { prompt: prompt, session_id: @session_id }.to_json
 
     response = http.request(req)
-    JSON.parse(response.body)
+    parsed = JSON.parse(response.body)
+
+    # Record the agent's response in shared memory
+    SharedMemory.append(@session_id, agent: 'inventory-service', type: 'answer', content: parsed['response'] || parsed.to_json)
+
+    parsed
   rescue => e
     { error: "Inventory agent unavailable: #{e.message}" }
   end
