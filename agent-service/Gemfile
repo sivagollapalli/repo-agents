@@ -5,5 +5,5 @@ gem 'sinatra-contrib'
 gem 'puma'
 gem 'json'
 gem 'net-http'
-gem 'ruby_llm'
+gem 'ai-agents', '~> 0.9.1'
 gem "rackup", "~> 2.3"

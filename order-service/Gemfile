@@ -6,6 +6,4 @@ gem 'sqlite3'
 gem 'puma'
 gem 'json'
 gem 'net-http'
-
-gem "rackup", "~> 2.3"
-gem "ruby_llm"
+gem 'rackup', '~> 2.3'

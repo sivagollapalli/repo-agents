@@ -1,6 +1,8 @@
 GEM
   remote: https://rubygems.org/
   specs:
+    ai-agents (0.9.1)
+      ruby_llm (~> 1.9.1)
     base64 (0.3.0)
     event_stream_parser (1.0.0)
     faraday (2.14.1)
@@ -36,17 +38,17 @@ GEM
     rackup (2.3.1)
       rack (>= 3)
     ruby2_keywords (0.0.5)
-    ruby_llm (1.13.2)
+    ruby_llm (1.9.2)
       base64
       event_stream_parser (~> 1)
-      faraday (>= 2.0)
+      faraday (>= 1.10.0)
       faraday-multipart (>= 1)
       faraday-net_http (>= 1)
-      faraday-retry (>= 2.0)
-      marcel (~> 1)
-      ruby_llm-schema (~> 0)
+      faraday-retry (>= 1)
+      marcel (~> 1.0)
+      ruby_llm-schema (~> 0.2.1)
       zeitwerk (~> 2)
-    ruby_llm-schema (0.3.0)
+    ruby_llm-schema (0.2.5)
     sinatra (4.2.1)
       logger (>= 1.6.0)
       mustermann (~> 3.0)
@@ -69,11 +71,11 @@ PLATFORMS
   ruby
 
 DEPENDENCIES
+  ai-agents (~> 0.9.1)
   json
   net-http
   puma
   rackup (~> 2.3)
-  ruby_llm
   sinatra
   sinatra-contrib
 
